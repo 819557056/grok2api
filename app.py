@@ -8,6 +8,9 @@ import inspect
 import secrets
 from loguru import logger
 from pathlib import Path
+import cf_util
+import pickle
+import threading
 
 import requests
 from flask import Flask, request, Response, jsonify, stream_with_context, render_template, redirect, session
@@ -80,7 +83,7 @@ class Logger:
         self.logger.bind(**caller_info).info(f"请求: {request.method} {request.path}", "Request")
 
 logger = Logger(level="INFO")
-DATA_DIR = Path("/data")
+DATA_DIR = Path("./data")
 
 if not DATA_DIR.exists():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -541,6 +544,10 @@ class GrokApiClient:
             }
 
             logger.info("发送文字文件请求", "Server")
+            # 获取cf_clearance值，如果已配置的为空则从文件获取
+            cf_clearance_values = cf_util.get_cf_clearance_value()
+            if not CONFIG['SERVER']['CF_CLEARANCE'] and cf_clearance_values:
+                CONFIG['SERVER']['CF_CLEARANCE'] = cf_clearance_values[0]  # 使用第一个找到的值
             cookie = f"{Utils.create_auth_headers(model, True)};{CONFIG['SERVER']['CF_CLEARANCE']}" 
             proxy_options = Utils.get_proxy_options()
             response = curl_requests.post(
@@ -881,9 +888,8 @@ def handle_image_response(image_url):
         image_content_type = image_base64_response.headers.get('content-type', 'image/jpeg')
         return f"![image](data:{image_content_type};base64,{base64_image})"
 
-    logger.info("开始上传图床", "Server")
 
-    if CONFIG["API"]["PICGO_KEY"]:
+    elif CONFIG["API"]["PICGO_KEY"]:
         files = {'source': ('image.jpg', image_buffer, 'image/jpeg')}
         headers = {
             "X-API-Key": CONFIG["API"]["PICGO_KEY"]
@@ -1019,14 +1025,97 @@ def handle_stream_response(response, model):
         yield "data: [DONE]\n\n"
     return generate()
 
+def save_token_manager(token_manager_obj, file_path="token_manager.pickle"):
+    """
+    将token_manager对象序列化保存到文件
+    
+    Args:
+        token_manager_obj: token_manager对象
+        file_path: 保存的文件路径
+    """
+    try:
+        data_dir = Path("./data")
+        if not data_dir.exists():
+            data_dir.mkdir(parents=True, exist_ok=True)
+        
+        full_path = data_dir / file_path
+        
+        with open(full_path, 'wb') as f:
+            pickle.dump(token_manager_obj, f)
+        
+        logger.info(f"成功保存token_manager对象到: {full_path}", "TokenPersistence")
+    except Exception as error:
+        logger.error(f"保存token_manager对象失败: {str(error)}", "TokenPersistence")
+
+def load_token_manager(file_path="token_manager.pickle"):
+    """
+    从文件加载token_manager对象
+    
+    Args:
+        file_path: token_manager对象的文件路径
+        
+    Returns:
+        加载的token_manager对象，如果加载失败则返回None
+    """
+    try:
+        data_dir = Path("./data")
+        full_path = data_dir / file_path
+        
+        if not full_path.exists():
+            logger.info(f"token_manager对象文件不存在: {full_path}", "TokenPersistence")
+            return None
+        
+        with open(full_path, 'rb') as f:
+            token_manager_obj = pickle.load(f)
+        
+        logger.info(f"成功从{full_path}加载token_manager对象", "TokenPersistence")
+        return token_manager_obj
+    except Exception as error:
+        logger.error(f"加载token_manager对象失败: {str(error)}", "TokenPersistence")
+        return None
+
+def start_token_manager_persistence(token_manager_obj, interval_minutes=10):
+    """
+    启动定期保存token_manager的线程
+    
+    Args:
+        token_manager_obj: 要保存的token_manager对象
+        interval_minutes: 保存间隔，单位为分钟
+    """
+    def persistence_task():
+        while True:
+            # 保存token_manager对象
+            save_token_manager(token_manager_obj)
+            # 等待指定时间
+            time.sleep(interval_minutes * 60)
+    
+    # 创建并启动线程
+    persistence_thread = threading.Thread(target=persistence_task)
+    persistence_thread.daemon = True
+    persistence_thread.start()
+    
+    logger.info(f"token_manager持久化线程已启动，保存间隔: {interval_minutes}分钟", "TokenPersistence")
+
 def initialization():
-    sso_array = os.environ.get("SSO", "").split(',')
-    logger.info("开始加载令牌", "Server")
-    token_manager.load_token_status()
-    for sso in sso_array:
-        if sso:
-            token_manager.add_token(f"sso-rw={sso};sso={sso}",True)
-    token_manager.save_token_status()
+    # 尝试从文件加载token_manager对象
+    loaded_token_manager = load_token_manager()
+    if loaded_token_manager:
+        # 如果成功加载，则将全局的token_manager替换为加载的对象
+        global token_manager
+        token_manager = loaded_token_manager
+        logger.info("从文件成功恢复token_manager对象", "Server")
+    else:
+        # 如果加载失败，则执行原有的初始化流程
+        sso_array = os.environ.get("SSO", "").split(',')
+        logger.info("开始加载令牌", "Server")
+        token_manager.load_token_status()
+        for sso in sso_array:
+            if sso:
+                token_manager.add_token(f"sso-rw={sso};sso={sso}", True)
+        token_manager.save_token_status()
+
+    # 启动token_manager持久化定时任务
+    start_token_manager_persistence(token_manager, 10)  # 每10分钟保存一次
 
     logger.info(f"成功加载令牌: {json.dumps(token_manager.get_all_tokens(), indent=2)}", "Server")
     logger.info(f"令牌加载完成，共加载: {len(token_manager.get_all_tokens())}个令牌", "Server")
@@ -1215,8 +1304,12 @@ def chat_completions():
             logger.info(
                 f"当前可用模型的全部可用数量: {json.dumps(token_manager.get_remaining_token_request_capacity(), indent=2)}","Server")
             
+            # 获取cf_clearance值，如果已配置的为空则从文件获取
+            cf_clearance_values = cf_util.get_cf_clearance_value()
+            if not CONFIG['SERVER']['CF_CLEARANCE'] and cf_clearance_values:
+                CONFIG['SERVER']['CF_CLEARANCE'] = cf_clearance_values[0]  # 使用第一个找到的值
             if CONFIG['SERVER']['CF_CLEARANCE']:
-                CONFIG["SERVER"]['COOKIE'] = f"{CONFIG['API']['SIGNATURE_COOKIE']};{CONFIG['SERVER']['CF_CLEARANCE']}" 
+                CONFIG["SERVER"]['COOKIE'] = f"{CONFIG['API']['SIGNATURE_COOKIE']};{CONFIG['SERVER']['CF_CLEARANCE']}"
             else:
                 CONFIG["SERVER"]['COOKIE'] = CONFIG['API']['SIGNATURE_COOKIE']
             logger.info(json.dumps(request_payload,indent=2),"Server")
@@ -1256,12 +1349,20 @@ def chat_completions():
                             raise ValueError(f"{model} 次数已达上限，请切换其他模型或者重新对话")
                 elif response.status_code == 403:
                     response_status_code = 403
-                    token_manager.reduce_token_request_count(model,1)#重置去除当前因为错误未成功请求的次数，确保不会因为错误未成功请求的次数导致次数上限
+                    token_manager.reduce_token_request_count(model,1)  # 重置去除当前因为错误未成功请求的次数，确保不会因为错误未成功请求的次数导致次数上限
                     if token_manager.get_token_count_for_model(model) == 0:
                         raise ValueError(f"{model} 次数已达上限，请切换其他模型或者重新对话")
                     print("状态码:", response.status_code)
                     print("响应头:", response.headers)
                     print("响应内容:", response.text)
+                    
+                    # 删除当前使用的cf_clearance值
+                    if CONFIG['SERVER']['CF_CLEARANCE']:
+                        logger.info(f"检测到CF验证失败，正在删除无效的CF_CLEARANCE值: {CONFIG['SERVER']['CF_CLEARANCE']}", "Server")
+                        cf_util.delete_data_by_cf_clearance(CONFIG['SERVER']['CF_CLEARANCE'])
+                        # 清空当前使用的CF_CLEARANCE
+                        CONFIG['SERVER']['CF_CLEARANCE'] = None
+                    
                     raise ValueError(f"IP暂时被封无法破盾，请稍后重试或者更换ip")
                 elif response.status_code == 429:
                     response_status_code = 429

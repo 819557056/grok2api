@@ -1,12 +1,17 @@
-version: '3.8'
+version: '3'
+
 services:
-  grok2api_python:
-    image: yxmiler/grok2api_python:latest
-    container_name: grok2api_python
+  grok-api:
+    image: dairoot/cf5s:latest
     ports:
-      - "3000:3000"
+      - "3000:3000"  # app服务端口
+      - "65123:8000"  # server服务端口
+    volumes:
+       - ./data:/app/data  # 挂载数据目录
     environment:
-      - API_KEY=your_api_key
+      - API_KEY=sk-123456  # 你的API密钥
+      - ADMINPASSWORD=admin  # 管理员密码
+      # 其他环境变量可以根据需要添加
       - TUMY_KEY=你的图床key,和PICGO_KEY 二选一
       - PICGO_KEY=你的图床key,和TUMY_KEY二选一
       - IS_TEMP_CONVERSATION=true

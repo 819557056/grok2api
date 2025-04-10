@@ -74,6 +74,7 @@ main() {
 
   echo -e "${GREEN}启动应用...${RESET}"
   python3 app.py
+  python3 server.py
 
   deactivate
 }
