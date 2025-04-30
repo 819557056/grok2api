@@ -17,6 +17,12 @@ from flask import Flask, request, Response, jsonify, stream_with_context, render
 from curl_cffi import requests as curl_requests
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+from fastapi import FastAPI, HTTPException, Depends, Query, Body
+from typing import List, Optional, Dict, Any
+
+import server
+
+
 class Logger:
     def __init__(self, level="INFO", colorize=True, format=None):
         logger.remove()
@@ -1408,9 +1414,23 @@ def chat_completions():
 def catch_all(path):
     return 'api运行正常', 200
 
+@app.get("/api/get-cf-list")
+async def get_cf_list(admin_password: Optional[str] = Query(None)):
+    return server.get_cf_list(admin_password)
+
+@app.post("/api/set-cf-cookie")
+async def set_cf_cookie(cookie_data: server.CookieData, admin_password: Optional[str] = Query(None)):
+    return server.set_cf_cookie(cookie_data, admin_password)
+
+@app.post("/api/update-config")
+async def update_config(config_data: dict = Body(...), admin_password: Optional[str] = Query(None)):
+    return server.update_config(config_data, admin_password)
+
 if __name__ == '__main__':
     token_manager = AuthTokenManager()
     initialization()
+
+    logger.info(f"管理员密码来源: {'环境变量' if server.ADMIN_PASSWORD != server.DEFAULT_ADMIN_PASSWORD else '默认值'}")
 
     app.run(
         host='0.0.0.0',
