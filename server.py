@@ -4,7 +4,6 @@ from typing import List, Optional, Dict, Any
 import time
 import json
 import os
-from datetime import datetime
 import logging
 from faker import Faker
 
@@ -267,69 +266,69 @@ async def get_cf_list(admin_password: Optional[str] = Query(None)):
     return response_data
 
 
-@app.post("/api/set-cf-cookie")
-async def set_cf_cookie(cookie_data: CookieData, admin_password: Optional[str] = Query(None)):
-    """设置新的Cloudflare cookie"""
-    logger.info(f"收到设置Cookie请求")
-    if admin_password:
-        logger.info(f"提供的admin_password长度: {len(admin_password)}")
-    else:
-        logger.warning("请求中没有提供admin_password参数")
-
-    # 为了调试，暂时注释掉密码验证逻辑
-    # 验证密码
-    # verify_admin_password(admin_password)
-
-    # 直接使用默认密码进行比较
-    if admin_password != DEFAULT_ADMIN_PASSWORD:
-        logger.warning(f"管理员密码验证失败: 接收到的密码与默认密码不匹配")
-        # 为了调试，暂时不抛出异常
-        logger.info(f"接收到的密码: {admin_password}, 默认密码: {DEFAULT_ADMIN_PASSWORD}")
-
-    # 加载当前配置和Cookie列表
-    config = load_config()
-    cookies = config.get("exist_data_list", [])
-
-    # 将cookie_data转换为字典
-    cookie_dict = cookie_data.to_dict()
-
-    # 检查是否已存在相同条件的cookie
-    found = False
-    for i, cookie in enumerate(cookies):
-        need_update = False
-
-        # 检查是否是相同条件的cookie
-        if cookie_data.proxy_url is not None:
-            if (cookie.get("proxy_url") == cookie_data.proxy_url and
-                    cookie.get("user_agent") == cookie_data.user_agent):
-                found = True
-                need_update = True
-        else:
-            if (cookie.get("proxy_url") is None and
-                    cookie.get("user_agent") == cookie_data.user_agent):
-                found = True
-                need_update = True
-
-        if need_update:
-            # 更新cookie
-            cookies[i] = cookie_dict
-            break
-
-    if not found:
-        # 添加新cookie
-        cookies.append(cookie_dict)
-
-    # 更新配置文件中的exist_data_list
-    config["exist_data_list"] = cookies
-    save_config(config)
-
-    # 为了兼容性，也保存到cookies文件
-    save_cookies(cookies)
-
-    logger.info(
-        f"成功保存Cookie: user_agent={cookie_data.user_agent}, proxy_url={cookie_data.proxy_url}")
-
-    return {"status": "success", "message": "Cookie saved successfully"}
+# @app.post("/api/set-cf-cookie")  # 此路由已在app.py中实现，此处注释以避免冲突
+# async def set_cf_cookie(cookie_data: CookieData, admin_password: Optional[str] = Query(None)):
+#     """设置新的Cloudflare cookie"""
+#     logger.info(f"收到设置Cookie请求")
+#     if admin_password:
+#         logger.info(f"提供的admin_password长度: {len(admin_password)}")
+#     else:
+#         logger.warning("请求中没有提供admin_password参数")
+# 
+#     # 为了调试，暂时注释掉密码验证逻辑
+#     # 验证密码
+#     # verify_admin_password(admin_password)
+# 
+#     # 直接使用默认密码进行比较
+#     if admin_password != DEFAULT_ADMIN_PASSWORD:
+#         logger.warning(f"管理员密码验证失败: 接收到的密码与默认密码不匹配")
+#         # 为了调试，暂时不抛出异常
+#         logger.info(f"接收到的密码: {admin_password}, 默认密码: {DEFAULT_ADMIN_PASSWORD}")
+# 
+#     # 加载当前配置和Cookie列表
+#     config = load_config()
+#     cookies = config.get("exist_data_list", [])
+# 
+#     # 将cookie_data转换为字典
+#     cookie_dict = cookie_data.to_dict()
+# 
+#     # 检查是否已存在相同条件的cookie
+#     found = False
+#     for i, cookie in enumerate(cookies):
+#         need_update = False
+# 
+#         # 检查是否是相同条件的cookie
+#         if cookie_data.proxy_url is not None:
+#             if (cookie.get("proxy_url") == cookie_data.proxy_url and
+#                     cookie.get("user_agent") == cookie_data.user_agent):
+#                 found = True
+#                 need_update = True
+#         else:
+#             if (cookie.get("proxy_url") is None and
+#                     cookie.get("user_agent") == cookie_data.user_agent):
+#                 found = True
+#                 need_update = True
+# 
+#         if need_update:
+#             # 更新cookie
+#             cookies[i] = cookie_dict
+#             break
+# 
+#     if not found:
+#         # 添加新cookie
+#         cookies.append(cookie_dict)
+# 
+#     # 更新配置文件中的exist_data_list
+#     config["exist_data_list"] = cookies
+#     save_config(config)
+# 
+#     # 为了兼容性，也保存到cookies文件
+#     save_cookies(cookies)
+# 
+#     logger.info(
+#         f"成功保存Cookie: user_agent={cookie_data.user_agent}, proxy_url={cookie_data.proxy_url}")
+# 
+#     return {"status": "success", "message": "Cookie saved successfully"}
 
 
 @app.post("/api/update-config")
