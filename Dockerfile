@@ -1,6 +1,7 @@
 FROM python:3.9-slim
 
 WORKDIR /app
+RUN mkdir -p /app/data
 
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -9,11 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-COPY ./.env /app/
+#COPY ./.env /app/
+#COPY data/ /app/data/
+
 COPY requirements.txt .
 COPY app.py .
 COPY cf_util.py .
-COPY data/ ./data/
 COPY templates/ ./templates/
 
 
