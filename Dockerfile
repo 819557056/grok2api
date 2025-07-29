@@ -19,20 +19,20 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制应用文件
 COPY app.py .
 COPY cf_util.py .
-#COPY templates/* ./templates/
+COPY templates/ ./templates/
 
 # 复制环境变量文件（如果存在）
 COPY .env* ./
 
 # 复制数据文件（如果存在）
-#COPY data/ ./data/
+COPY data/ ./data/
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1
-ENV PORT=8000
+ENV PORT=5200
 
 # 暴露端口
-EXPOSE 8000
+EXPOSE 5200
 
 # 启动命令
 CMD ["python", "app.py"]
