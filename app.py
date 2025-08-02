@@ -168,22 +168,23 @@ class AuthTokenManager:
         self.token_model_map = {}
         self.expired_tokens = set()
         self.token_status_map = {}
+        self.token_usage_records = {}  # 新增：记录每次token使用
         self.model_super_config = {
                 "grok-3": {
                     "RequestFrequency": 100,
-                    "ExpirationTime": 3 * 60 * 60 * 1000  # 3小时
+                    "ExpirationTime": 2 * 60 * 60 * 1000  # 2小时
                 },
                 "grok-3-deepsearch": {
                     "RequestFrequency": 30,
-                    "ExpirationTime": 24 * 60 * 60 * 1000  # 3小时
+                    "ExpirationTime": 2 * 60 * 60 * 1000  # 2小时
                 },
                 "grok-3-deepersearch": {
                     "RequestFrequency": 10,
-                    "ExpirationTime": 3 * 60 * 60 * 1000  # 23小时
+                    "ExpirationTime": 3 * 60 * 60 * 1000  # 3小时
                 },
                 "grok-3-reasoning": {
                     "RequestFrequency": 30,
-                    "ExpirationTime": 3 * 60 * 60 * 1000  # 3小时
+                    "ExpirationTime": 2 * 60 * 60 * 1000  # 2小时
                 },
                 "grok-4": {
                     "RequestFrequency": 20,
@@ -193,24 +194,25 @@ class AuthTokenManager:
         self.model_normal_config = {
                 "grok-3": {
                     "RequestFrequency": 20,
-                    "ExpirationTime": 3 * 60 * 60 * 1000  # 3小时
+                    "ExpirationTime": 2 * 60 * 60 * 1000  # 2小时
                 },
                 "grok-3-deepsearch": {
                     "RequestFrequency": 10,
-                    "ExpirationTime": 24 * 60 * 60 * 1000  # 24小时
+                    "ExpirationTime": 2 * 60 * 60 * 1000  # 2小时
                 },
                 "grok-3-deepersearch": {
                     "RequestFrequency": 3,
                     "ExpirationTime": 24 * 60 * 60 * 1000  # 24小时
                 },
                 "grok-3-reasoning": {
-                    "RequestFrequency": 8,
-                    "ExpirationTime": 24 * 60 * 60 * 1000  # 24小时
+                    "RequestFrequency": 10,
+                    "ExpirationTime": 2 * 60 * 60 * 1000  # 2小时
                 }
             }
         self.model_config = self.model_normal_config
         self.token_reset_switch = False
         self.token_reset_timer = None
+        self.usage_records_file = str(DATA_DIR / "token_usage_records.json")
     def save_token_status(self):
         try:
             with open(CONFIG["TOKEN_STATUS_FILE"], 'w', encoding='utf-8') as f:
@@ -228,6 +230,85 @@ class AuthTokenManager:
                 logger.info("已从配置文件加载令牌状态", "TokenManager")
         except Exception as error:
             logger.error(f"加载令牌状态失败: {str(error)}", "TokenManager")
+
+    def save_usage_records(self):
+        """保存token使用记录"""
+        try:
+            with open(self.usage_records_file, 'w', encoding='utf-8') as f:
+                json.dump(self.token_usage_records, f, indent=2, ensure_ascii=False)
+            logger.info("token使用记录已保存", "TokenManager")
+        except Exception as error:
+            logger.error(f"保存token使用记录失败: {str(error)}", "TokenManager")
+
+    def load_usage_records(self):
+        """加载token使用记录"""
+        try:
+            usage_records_file = Path(self.usage_records_file)
+            if usage_records_file.exists():
+                with open(usage_records_file, 'r', encoding='utf-8') as f:
+                    self.token_usage_records = json.load(f)
+                logger.info("已从文件加载token使用记录", "TokenManager")
+        except Exception as error:
+            logger.error(f"加载token使用记录失败: {str(error)}", "TokenManager")
+
+    def record_token_usage(self, model_id, token, success=True):
+        """记录token使用情况"""
+        try:
+            current_time = int(time.time() * 1000)
+            sso = token.split("sso=")[1].split(";")[0] if "sso=" in token else "unknown"
+            
+            # 初始化记录结构
+            if sso not in self.token_usage_records:
+                self.token_usage_records[sso] = {}
+            if model_id not in self.token_usage_records[sso]:
+                self.token_usage_records[sso][model_id] = {
+                    "total_calls": 0,
+                    "successful_calls": 0,
+                    "failed_calls": 0,
+                    "last_call_time": None,
+                    "call_history": []
+                }
+            
+            # 记录使用情况
+            record = self.token_usage_records[sso][model_id]
+            record["total_calls"] += 1
+            record["last_call_time"] = current_time
+            
+            if success:
+                record["successful_calls"] += 1
+            else:
+                record["failed_calls"] += 1
+            
+            # 保留最近100次调用记录
+            record["call_history"].append({
+                "timestamp": current_time,
+                "success": success,
+                "model": model_id
+            })
+            if len(record["call_history"]) > 100:
+                record["call_history"] = record["call_history"][-100:]
+            
+            # 定期保存记录
+            if record["total_calls"] % 10 == 0:  # 每10次调用保存一次
+                self.save_usage_records()
+                
+            logger.info(f"记录token使用: {model_id}, sso: {sso[:8]}..., 成功: {success}", "TokenManager")
+            
+        except Exception as error:
+            logger.error(f"记录token使用失败: {str(error)}", "TokenManager")
+
+    def get_usage_statistics(self, sso=None, model_id=None):
+        """获取使用统计信息"""
+        try:
+            if sso and model_id:
+                return self.token_usage_records.get(sso, {}).get(model_id, {})
+            elif sso:
+                return self.token_usage_records.get(sso, {})
+            else:
+                return self.token_usage_records
+        except Exception as error:
+            logger.error(f"获取使用统计失败: {str(error)}", "TokenManager")
+            return {}
     def add_token(self, tokens, isinitialization=False):
         tokenType = tokens.get("type")
         tokenSso = tokens.get("token")
@@ -365,6 +446,9 @@ class AuthTokenManager:
 
             token_entry["RequestCount"] += 1
 
+            # 记录token使用
+            self.record_token_usage(normalized_model, token_entry["token"], True)
+
             if token_entry["RequestCount"] > token_entry["MaxRequestCount"]:
                 self.remove_token_from_model(normalized_model, token_entry["token"])
                 next_token_entry = self.token_model_map[normalized_model][0] if self.token_model_map[normalized_model] else None
@@ -376,9 +460,13 @@ class AuthTokenManager:
                 if token_entry["RequestCount"] == self.model_config[normalized_model]["RequestFrequency"]:
                     self.token_status_map[sso][normalized_model]["isValid"] = False
                     self.token_status_map[sso][normalized_model]["invalidatedTime"] = int(time.time() * 1000)
-                self.token_status_map[sso][normalized_model]["totalRequestCount"] += 1
-
-
+                
+                # 确保与usage_records保持一致
+                usage_record = self.token_usage_records.get(sso, {}).get(normalized_model, {})
+                if usage_record:
+                    self.token_status_map[sso][normalized_model]["totalRequestCount"] = usage_record.get("total_calls", 0)
+                else:
+                    self.token_status_map[sso][normalized_model]["totalRequestCount"] += 1
 
                 self.save_token_status()
 
@@ -478,6 +566,8 @@ class AuthTokenManager:
                         self.token_status_map[sso][model]["totalRequestCount"] = 0
                         self.token_status_map[sso][model]["isSuper"] = type == "super"
 
+                    # 记录token重置
+                    logger.info(f"Token重置: {model}, sso: {sso[:8]}..., 类型: {type}", "TokenManager")
                     tokens_to_remove.add(token_info)
 
             self.expired_tokens -= tokens_to_remove
@@ -501,13 +591,16 @@ class AuthTokenManager:
 
                         token_entry["RequestCount"] = 0
                         token_entry["StartCallTime"] = None
+                        
+                        # 记录token重置
+                        logger.info(f"Token定时重置: {model}, sso: {sso[:8]}..., 类型: {token_entry['type']}", "TokenManager")
 
         import threading
-        # 启动一个线程执行定时任务，每小时执行一次
+        # 启动一个线程执行定时任务，每30分钟执行一次（更频繁检查2小时重置）
         def run_timer():
             while True:
                 reset_expired_tokens()
-                time.sleep(3600)
+                time.sleep(1800)  # 30分钟检查一次
 
         timer_thread = threading.Thread(target=run_timer)
         timer_thread.daemon = True
@@ -530,6 +623,77 @@ class AuthTokenManager:
 
     def get_token_status_map(self):
         return self.token_status_map
+
+    def check_and_reset_expired_tokens(self):
+        """检查并重置过期的token状态"""
+        try:
+            now = int(time.time() * 1000)
+            
+            # 检查expired_tokens中的token是否可以重置
+            tokens_to_remove = set()
+            for token_info in self.expired_tokens:
+                token, model, expired_time, type = token_info
+                model_config = self.model_super_config if type == "super" else self.model_normal_config
+                expiration_time = model_config[model]["ExpirationTime"]
+
+                if now - expired_time >= expiration_time:
+                    # 重新激活token
+                    if not any(entry["token"] == token for entry in self.token_model_map.get(model, [])):
+                        if model not in self.token_model_map:
+                            self.token_model_map[model] = []
+
+                        self.token_model_map[model].append({
+                            "token": token,
+                            "MaxRequestCount": model_config[model]["RequestFrequency"],
+                            "RequestCount": 0,
+                            "AddedTime": now,
+                            "StartCallTime": None,
+                            "type": type
+                        })
+
+                    sso = token.split("sso=")[1].split(";")[0] if "sso=" in token else "unknown"
+                    if sso in self.token_status_map and model in self.token_status_map[sso]:
+                        self.token_status_map[sso][model]["isValid"] = True
+                        self.token_status_map[sso][model]["invalidatedTime"] = None
+                        self.token_status_map[sso][model]["totalRequestCount"] = 0
+                        self.token_status_map[sso][model]["isSuper"] = type == "super"
+
+                    logger.info(f"Token已重置: {model}, sso: {sso[:8]}..., 类型: {type}", "TokenManager")
+                    tokens_to_remove.add(token_info)
+
+            self.expired_tokens -= tokens_to_remove
+
+            # 检查当前活跃token是否需要重置
+            for model in list(self.token_model_map.keys()):
+                if model not in self.token_model_map:
+                    continue
+
+                for token_entry in self.token_model_map[model]:
+                    if not token_entry.get("StartCallTime"):
+                        continue
+
+                    model_config = self.model_super_config if token_entry["type"] == "super" else self.model_normal_config
+                    expiration_time = model_config[model]["ExpirationTime"]
+                    
+                    if now - token_entry["StartCallTime"] >= expiration_time:
+                        sso = token_entry["token"].split("sso=")[1].split(";")[0] if "sso=" in token_entry["token"] else "unknown"
+                        
+                        if sso in self.token_status_map and model in self.token_status_map[sso]:
+                            self.token_status_map[sso][model]["isValid"] = True
+                            self.token_status_map[sso][model]["invalidatedTime"] = None
+                            self.token_status_map[sso][model]["totalRequestCount"] = 0
+                            self.token_status_map[sso][model]["isSuper"] = token_entry["type"] == "super"
+
+                        token_entry["RequestCount"] = 0
+                        token_entry["StartCallTime"] = None
+                        
+                        logger.info(f"Token实时重置: {model}, sso: {sso[:8]}..., 类型: {token_entry['type']}", "TokenManager")
+
+            # 保存更新后的状态
+            self.save_token_status()
+            
+        except Exception as error:
+            logger.error(f"检查和重置过期token时发生错误: {str(error)}", "TokenManager")
 
 class Utils:
     @staticmethod
@@ -1034,90 +1198,209 @@ def handle_non_stream_response(response, model):
 
         stream = response.iter_lines()
         full_response = ""
-
+        
         CONFIG["IS_THINKING"] = False
         CONFIG["IS_IMG_GEN"] = False
         CONFIG["IS_IMG_GEN2"] = False
+        
+        chunk_count = 0
+        error_count = 0
 
         for chunk in stream:
             if not chunk:
                 continue
+                
+            chunk_count += 1
+            logger.debug(f"处理非流式响应第 {chunk_count} 个数据块", "Server")
+            
             try:
-                line_json = json.loads(chunk.decode("utf-8").strip())
+                chunk_str = chunk.decode("utf-8").strip()
+                if not chunk_str:
+                    continue
+                    
+                line_json = json.loads(chunk_str)
+                logger.debug(f"非流式响应JSON解析成功: {json.dumps(line_json, ensure_ascii=False)}", "Server")
+                
+                # 检查是否有错误
                 if line_json.get("error"):
-                    logger.error(json.dumps(line_json, indent=2), "Server")
-                    return json.dumps({"error": "RateLimitError"}) + "\n\n"
+                    error_info = line_json.get("error")
+                    error_code = error_info.get("code", "unknown")
+                    error_message = error_info.get("message", "Unknown error")
+                    
+                    logger.error(f"非流式响应中收到错误 - 代码: {error_code}, 消息: {error_message}, 详细信息: {json.dumps(line_json, indent=2, ensure_ascii=False)}", "Server")
+                    
+                    # 根据错误类型决定如何处理
+                    if error_code == 13:  # "Failed to respond" 错误
+                        logger.warning("非流式响应检测到 'Failed to respond' 错误", "Server")
+                        if full_response:
+                            logger.info(f"返回已收集的部分响应内容，长度: {len(full_response)}", "Server")
+                            return full_response
+                        else:
+                            return "[响应被中断，请重试]"
+                    else:
+                        # 其他错误类型，返回错误信息
+                        return f"[错误: {error_message}]"
 
                 response_data = line_json.get("result", {}).get("response")
                 if not response_data:
+                    logger.debug("非流式响应数据为空，跳过此块", "Server")
                     continue
 
                 if response_data.get("doImgGen") or response_data.get("imageAttachmentInfo"):
                     CONFIG["IS_IMG_GEN"] = True
+                    logger.debug("非流式响应检测到图片生成请求", "Server")
 
                 result = process_model_response(response_data, model)
 
-                if result["token"]:
-                    full_response += result["token"]
+                if result and result.get("token"):
+                    token_content = result["token"]
+                    if token_content:  # 确保token不为空
+                        full_response += token_content
 
-                if result["imageUrl"]:
+                if result and result.get("imageUrl"):
                     CONFIG["IS_IMG_GEN2"] = True
-                    return handle_image_response(result["imageUrl"])
+                    logger.info("非流式响应开始处理图片", "Server")
+                    try:
+                        return handle_image_response(result["imageUrl"])
+                    except Exception as img_error:
+                        logger.error(f"非流式响应处理图片时出错: {str(img_error)}", "Server")
+                        return "[图片处理失败]"
 
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as json_error:
+                error_count += 1
+                logger.warning(f"非流式响应JSON解析失败 (第{error_count}次): {str(json_error)}, 原始数据: {chunk_str[:200]}...", "Server")
+                if error_count > 10:  # 如果连续解析失败太多次，返回已有内容
+                    logger.error("非流式响应JSON解析失败次数过多，返回已收集内容", "Server")
+                    return full_response if full_response else "[数据解析错误]"
                 continue
-            except Exception as e:
-                logger.error(f"处理流式响应行时出错: {str(e)}", "Server")
+                
+            except Exception as chunk_error:
+                error_count += 1
+                logger.error(f"非流式响应处理数据块时出错 (第{error_count}次): {str(chunk_error)}", "Server")
+                if error_count > 5:  # 如果错误太多，返回已有内容
+                    logger.error("非流式响应处理错误次数过多，返回已收集内容", "Server")
+                    return full_response if full_response else "[处理错误过多]"
                 continue
 
-        return full_response
+        logger.info(f"非流式响应处理完成，共处理 {chunk_count} 个数据块，错误 {error_count} 次，响应长度: {len(full_response)}", "Server")
+        return full_response if full_response else "[未收到有效响应]"
+        
     except Exception as error:
-        logger.error(str(error), "Server")
-        raise
+        logger.error(f"非流式响应处理发生严重错误: {str(error)}", "Server")
+        raise Exception(f"非流式响应处理失败: {str(error)}")
 def handle_stream_response(response, model):
     def generate():
         logger.info("开始处理流式响应", "Server")
+        
+        try:
+            stream = response.iter_lines()
+            CONFIG["IS_THINKING"] = False
+            CONFIG["IS_IMG_GEN"] = False
+            CONFIG["IS_IMG_GEN2"] = False
+            
+            chunk_count = 0
+            error_count = 0
+            
+            for chunk in stream:
+                if not chunk:
+                    continue
+                    
+                chunk_count += 1
+                logger.debug(f"处理第 {chunk_count} 个数据块", "Server")
+                
+                try:
+                    chunk_str = chunk.decode("utf-8").strip()
+                    if not chunk_str:
+                        continue
+                        
+                    line_json = json.loads(chunk_str)
+                    logger.debug(f"解析JSON成功: {json.dumps(line_json, ensure_ascii=False)}", "Server")
+                    
+                    # 检查是否有错误
+                    if line_json.get("error"):
+                        error_info = line_json.get("error")
+                        error_code = error_info.get("code", "unknown")
+                        error_message = error_info.get("message", "Unknown error")
+                        
+                        logger.error(f"流式响应中收到错误 - 代码: {error_code}, 消息: {error_message}, 详细信息: {json.dumps(line_json, indent=2, ensure_ascii=False)}", "Server")
+                        
+                        # 根据错误类型决定如何处理
+                        if error_code == 13:  # "Failed to respond" 错误
+                            logger.warning("检测到 'Failed to respond' 错误，尝试优雅结束流式响应", "Server")
+                            yield f"data: {json.dumps(MessageProcessor.create_chat_response('[响应被中断，请重试]', model, True))}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                        else:
+                            # 其他错误类型
+                            error_response = {
+                                "error": {
+                                    "message": f"流式响应错误: {error_message}",
+                                    "type": "stream_error",
+                                    "code": error_code
+                                }
+                            }
+                            yield f"data: {json.dumps(error_response)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
 
-        stream = response.iter_lines()
-        CONFIG["IS_THINKING"] = False
-        CONFIG["IS_IMG_GEN"] = False
-        CONFIG["IS_IMG_GEN2"] = False
+                    # 处理正常响应数据
+                    response_data = line_json.get("result", {}).get("response")
+                    if not response_data:
+                        logger.debug("响应数据为空，跳过此块", "Server")
+                        continue
 
-        for chunk in stream:
-            if not chunk:
-                continue
-            try:
-                line_json = json.loads(chunk.decode("utf-8").strip())
-                print(line_json)
-                if line_json.get("error"):
-                    logger.error(json.dumps(line_json, indent=2), "Server")
-                    yield json.dumps({"error": "RateLimitError"}) + "\n\n"
-                    return
+                    if response_data.get("doImgGen") or response_data.get("imageAttachmentInfo"):
+                        CONFIG["IS_IMG_GEN"] = True
+                        logger.debug("检测到图片生成请求", "Server")
 
-                response_data = line_json.get("result", {}).get("response")
-                if not response_data:
+                    result = process_model_response(response_data, model)
+
+                    if result and result.get("token"):
+                        token_content = result["token"]
+                        if token_content:  # 确保token不为空
+                            yield f"data: {json.dumps(MessageProcessor.create_chat_response(token_content, model, True))}\n\n"
+
+                    if result and result.get("imageUrl"):
+                        CONFIG["IS_IMG_GEN2"] = True
+                        logger.info("开始处理图片响应", "Server")
+                        try:
+                            image_data = handle_image_response(result["imageUrl"])
+                            yield f"data: {json.dumps(MessageProcessor.create_chat_response(image_data, model, True))}\n\n"
+                        except Exception as img_error:
+                            logger.error(f"处理图片响应时出错: {str(img_error)}", "Server")
+                            yield f"data: {json.dumps(MessageProcessor.create_chat_response('[图片处理失败]', model, True))}\n\n"
+
+                except json.JSONDecodeError as json_error:
+                    error_count += 1
+                    logger.warning(f"JSON解析失败 (第{error_count}次): {str(json_error)}, 原始数据: {chunk_str[:200]}...", "Server")
+                    if error_count > 10:  # 如果连续解析失败太多次，终止流
+                        logger.error("JSON解析失败次数过多，终止流式响应", "Server")
+                        yield f"data: {json.dumps(MessageProcessor.create_chat_response('[数据解析错误，响应终止]', model, True))}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    continue
+                    
+                except Exception as chunk_error:
+                    error_count += 1
+                    logger.error(f"处理数据块时出错 (第{error_count}次): {str(chunk_error)}", "Server")
+                    if error_count > 5:  # 如果错误太多，终止流
+                        logger.error("处理错误次数过多，终止流式响应", "Server")
+                        yield f"data: {json.dumps(MessageProcessor.create_chat_response('[处理错误过多，响应终止]', model, True))}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
                     continue
 
-                if response_data.get("doImgGen") or response_data.get("imageAttachmentInfo"):
-                    CONFIG["IS_IMG_GEN"] = True
-
-                result = process_model_response(response_data, model)
-
-                if result["token"]:
-                    yield f"data: {json.dumps(MessageProcessor.create_chat_response(result['token'], model, True))}\n\n"
-
-                if result["imageUrl"]:
-                    CONFIG["IS_IMG_GEN2"] = True
-                    image_data = handle_image_response(result["imageUrl"])
-                    yield f"data: {json.dumps(MessageProcessor.create_chat_response(image_data, model, True))}\n\n"
-
-            except json.JSONDecodeError:
-                continue
-            except Exception as e:
-                logger.error(f"处理流式响应行时出错: {str(e)}", "Server")
-                continue
-
-        yield "data: [DONE]\n\n"
+            logger.info(f"流式响应处理完成，共处理 {chunk_count} 个数据块，错误 {error_count} 次", "Server")
+            yield "data: [DONE]\n\n"
+            
+        except Exception as stream_error:
+            logger.error(f"流式响应处理发生严重错误: {str(stream_error)}", "Server")
+            try:
+                yield f"data: {json.dumps(MessageProcessor.create_chat_response('[流式响应处理失败]', model, True))}\n\n"
+                yield "data: [DONE]\n\n"
+            except:
+                pass  # 如果连yield都失败了，就静默处理
+                
     return generate()
 
 def save_token_manager(token_manager_obj, file_path="token_manager.pickle"):
@@ -1201,6 +1484,33 @@ def initialization():
     if loaded_token_manager:
         token_manager = loaded_token_manager
         logger.info("从文件成功恢复token_manager对象", "Server")
+        
+        # 从恢复的token_manager中统计令牌数量
+        all_tokens = token_manager.get_all_tokens()
+        normal_count = 0
+        super_count = 0
+        
+        # 遍历token_model_map来统计不同类型的令牌
+        for model_tokens in token_manager.token_model_map.values():
+            for token_entry in model_tokens:
+                if token_entry.get("type") == "super":
+                    super_count += 1
+                else:
+                    normal_count += 1
+        
+        # 去重统计（因为同一个token可能在多个模型中）
+        unique_tokens = set()
+        for model_tokens in token_manager.token_model_map.values():
+            for token_entry in model_tokens:
+                unique_tokens.add((token_entry["token"], token_entry.get("type", "normal")))
+        
+        normal_count = sum(1 for _, token_type in unique_tokens if token_type == "normal")
+        super_count = sum(1 for _, token_type in unique_tokens if token_type == "super")
+        
+        # 更新数组以便正确显示统计信息
+        sso_array = ['recovered'] * normal_count  # 用占位符表示恢复的普通令牌
+        sso_array_super = ['recovered'] * super_count  # 用占位符表示恢复的super令牌
+        
     else:
         # 如果加载失败，则执行原有的初始化流程
         sso_array = os.environ.get("SSO", "").split(',')
@@ -1220,6 +1530,7 @@ def initialization():
 
         logger.info("开始加载令牌", "Server")
         token_manager.load_token_status()
+        token_manager.load_usage_records()  # 加载使用记录
         for tokens in combined_dict:
             if tokens:
                 token_manager.add_token(tokens, True)
@@ -1269,6 +1580,9 @@ def manager():
 def get_manager_tokens():
     if not check_auth():
         return jsonify({"error": "Unauthorized"}), 401
+    
+    # 在返回状态前，先检查并更新过期的token状态
+    token_manager.check_and_reset_expired_tokens()
     return jsonify(token_manager.get_token_status_map())
 
 @app.route('/manager/api/add', methods=['POST'])
@@ -1318,6 +1632,9 @@ def get_tokens():
         return jsonify({"error": '自定义的SSO令牌模式无法获取轮询sso令牌状态'}), 403
     elif auth_token != CONFIG["API"]["API_KEY"]:
         return jsonify({"error": 'Unauthorized'}), 401
+    
+    # 在返回状态前，先检查并更新过期的token状态
+    token_manager.check_and_reset_expired_tokens()
     return jsonify(token_manager.get_token_status_map())
 
 @app.route('/add/token', methods=['POST'])
@@ -1364,6 +1681,49 @@ def delete_token():
     except Exception as error:
         logger.error(str(error), "Server")
         return jsonify({"error": '删除sso令牌失败'}), 500
+
+@app.route('/get/usage_statistics', methods=['GET'])
+def get_usage_statistics():
+    """获取token使用统计"""
+    auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if auth_token != CONFIG["API"]["API_KEY"]:
+        return jsonify({"error": 'Unauthorized'}), 401
+    
+    try:
+        # 在返回统计前，先检查并更新过期的token状态
+        token_manager.check_and_reset_expired_tokens()
+        
+        sso = request.args.get('sso')
+        model_id = request.args.get('model')
+        
+        statistics = token_manager.get_usage_statistics(sso, model_id)
+        
+        # 添加当前时间和重置信息
+        current_time = int(time.time() * 1000)
+        response_data = {
+            "current_time": current_time,
+            "statistics": statistics,
+            "token_status": token_manager.get_token_status_map(),  # 添加实时token状态
+            "model_limits": {
+                "grok-3": {
+                    "normal": {"limit": 20, "reset_hours": 2},
+                    "super": {"limit": 100, "reset_hours": 2}
+                },
+                "grok-3-deepsearch": {
+                    "normal": {"limit": 10, "reset_hours": 2},
+                    "super": {"limit": 30, "reset_hours": 2}
+                },
+                "grok-3-reasoning": {
+                    "normal": {"limit": 10, "reset_hours": 2},
+                    "super": {"limit": 30, "reset_hours": 2}
+                }
+            }
+        }
+        
+        return jsonify(response_data), 200
+    except Exception as error:
+        logger.error(str(error), "Server")
+        return jsonify({"error": '获取使用统计失败'}), 500
 
 @app.route('/v1/models', methods=['GET'])
 def get_models():
@@ -1445,23 +1805,38 @@ def chat_completions():
                     logger.info(f"当前{model}剩余可用令牌数: {token_manager.get_token_count_for_model(model)}","Server")
 
                     try:
+                        logger.info(f"开始处理响应 - 模型: {model}, 流式: {stream}", "Server")
                         if stream:
+                            logger.info("返回流式响应", "Server")
                             return Response(stream_with_context(
                                 handle_stream_response(response, model)),content_type='text/event-stream')
                         else:
+                            logger.info("开始处理非流式响应", "Server")
                             content = handle_non_stream_response(response, model)
+                            logger.info(f"非流式响应处理完成，内容长度: {len(str(content))}", "Server")
                             return jsonify(
                                 MessageProcessor.create_chat_response(content, model))
 
                     except Exception as error:
-                        logger.error(str(error), "Server")
+                        logger.error(f"响应处理异常 - 模型: {model}, 流式: {stream}, 错误: {str(error)}", "Server")
+                        logger.error(f"异常详细信息: {type(error).__name__}: {str(error)}", "Server")
+                        
                         if CONFIG["API"]["IS_CUSTOM_SSO"]:
+                            logger.warning(f"自定义SSO模式下的响应处理失败", "Server")
                             raise ValueError(f"自定义SSO令牌当前模型{model}的请求次数已失效")
+                        
+                        logger.info(f"移除失效令牌: {CONFIG['API']['SIGNATURE_COOKIE']}", "Server")
                         token_manager.remove_token_from_model(model, CONFIG["API"]["SIGNATURE_COOKIE"])
-                        if token_manager.get_token_count_for_model(model) == 0:
+                        remaining_tokens = token_manager.get_token_count_for_model(model)
+                        logger.info(f"移除令牌后，{model}剩余令牌数: {remaining_tokens}", "Server")
+                        
+                        if remaining_tokens == 0:
+                            logger.error(f"模型 {model} 无可用令牌", "Server")
                             raise ValueError(f"{model} 次数已达上限，请切换其他模型或者重新对话")
                 elif response.status_code == 403:
                     response_status_code = 403
+                    # 记录失败的调用
+                    token_manager.record_token_usage(model, CONFIG["API"]["SIGNATURE_COOKIE"], False)
                     token_manager.reduce_token_request_count(model,1)#重置去除当前因为错误未成功请求的次数，确保不会因为错误未成功请求的次数导致次数上限
                     if token_manager.get_token_count_for_model(model) == 0:
                         raise ValueError(f"{model} 次数已达上限，请切换其他模型或者重新对话")
@@ -1479,6 +1854,8 @@ def chat_completions():
                     raise ValueError(f"IP暂时被封无法破盾，请稍后重试或者更换ip")
                 elif response.status_code == 429:
                     response_status_code = 429
+                    # 记录失败的调用
+                    token_manager.record_token_usage(model, CONFIG["API"]["SIGNATURE_COOKIE"], False)
                     token_manager.reduce_token_request_count(model,1)
                     if CONFIG["API"]["IS_CUSTOM_SSO"]:
                         raise ValueError(f"自定义SSO令牌当前模型{model}的请求次数已失效")
@@ -1489,6 +1866,8 @@ def chat_completions():
                         raise ValueError(f"{model} 次数已达上限，请切换其他模型或者重新对话")
 
                 else:
+                    # 记录失败的调用
+                    token_manager.record_token_usage(model, CONFIG["API"]["SIGNATURE_COOKIE"], False)
                     if CONFIG["API"]["IS_CUSTOM_SSO"]:
                         raise ValueError(f"自定义SSO令牌当前模型{model}的请求次数已失效")
 
@@ -1499,9 +1878,14 @@ def chat_completions():
                         "Server")
 
             except Exception as e:
-                logger.error(f"请求处理异常: {str(e)}", "Server")
+                logger.error(f"请求处理异常 - 重试次数: {retry_count}, 模型: {model}, 异常类型: {type(e).__name__}, 异常信息: {str(e)}", "Server")
+                logger.debug(f"异常发生时的配置状态 - 令牌: {CONFIG['API']['SIGNATURE_COOKIE'][:50] if CONFIG['API']['SIGNATURE_COOKIE'] else 'None'}..., CF_CLEARANCE: {CONFIG['SERVER']['CF_CLEARANCE'][:50] if CONFIG['SERVER']['CF_CLEARANCE'] else 'None'}...", "Server")
+                
                 if CONFIG["API"]["IS_CUSTOM_SSO"]:
+                    logger.error("自定义SSO模式下发生异常，直接抛出", "Server")
                     raise
+                    
+                logger.info(f"继续重试，当前重试次数: {retry_count}/{CONFIG['RETRY']['MAX_ATTEMPTS']}", "Server")
                 continue
         if response_status_code == 403:
             raise ValueError('IP暂时被封无法破盾，请稍后重试或者更换ip')
@@ -1509,11 +1893,23 @@ def chat_completions():
             raise ValueError('当前模型所有令牌暂无可用，请稍后重试')
 
     except Exception as error:
-        logger.error(str(error), "ChatAPI")
+        logger.error(f"聊天API最终异常 - 模型: {data.get('model', 'unknown') if 'data' in locals() else 'unknown'}, 状态码: {response_status_code}, 异常类型: {type(error).__name__}, 异常信息: {str(error)}", "ChatAPI")
+        
+        # 记录请求的基本信息用于调试
+        try:
+            if 'data' in locals():
+                logger.debug(f"请求详情 - 模型: {data.get('model')}, 消息数量: {len(data.get('messages', []))}, 流式: {data.get('stream', False)}", "ChatAPI")
+            if 'model' in locals():
+                remaining_capacity = token_manager.get_remaining_token_request_capacity()
+                logger.debug(f"当前令牌容量状态: {json.dumps(remaining_capacity, indent=2)}", "ChatAPI")
+        except Exception as debug_error:
+            logger.warning(f"记录调试信息时出错: {str(debug_error)}", "ChatAPI")
+        
         return jsonify(
             {"error": {
                 "message": str(error),
-                "type": "server_error"
+                "type": "server_error",
+                "timestamp": int(time.time())
             }}), response_status_code
 
 @app.route('/', defaults={'path': ''})
@@ -1683,24 +2079,24 @@ def verify_admin_password(admin_password: str = Query(None)):
     return True
 
 
-@app.get("/api/get-cf-list")
-def get_cf_list(admin_password: Optional[str] = Query(None)):
+@app.route("/api/get-cf-list", methods=['GET'])
+def get_cf_list():
     """获取需要更新的代理和用户代理列表"""
     logger.info(f"收到获取配置请求")
+    
+    # 从请求参数中获取密码
+    admin_password = request.args.get('admin_password')
+    
     if admin_password:
-        logger.info(f"提供的admin_password长度: {admin_password}")
+        logger.info(f"提供的admin_password长度: {len(admin_password)}")
     else:
         logger.warning("请求中没有提供admin_password参数")
 
-    # 为了调试，暂时注释掉密码验证逻辑
     # 验证密码
-    # verify_admin_password(admin_password)
-
-    # 直接使用默认密码进行比较
     if admin_password != DEFAULT_ADMIN_PASSWORD:
         logger.warning(f"管理员密码验证失败: 接收到的密码与默认密码不匹配")
-        # 为了调试，暂时不抛出异常
         logger.info(f"接收到的密码: {admin_password}, 默认密码: {DEFAULT_ADMIN_PASSWORD}")
+        return jsonify({"error": "Invalid admin password"}), 403
 
     # 加载配置
     config = load_config()
@@ -1727,7 +2123,7 @@ def get_cf_list(admin_password: Optional[str] = Query(None)):
     # 如果user_agent_list为空，使用faker生成10个随机user-agent
     if not config["need_update"].get("user_agent_list"):
         logger.info("User-Agent列表为空，自动生成10个随机User-Agent")
-        need_update["user_agent_list"] = generate_random_user_agents(int(CF_CLEARANCE_SIZE))
+        need_update["user_agent_list"] = generate_random_user_agents(10)
         # 保存生成的User-Agent到配置中
         config["need_update"]["user_agent_list"] = need_update["user_agent_list"]
         save_config(config)
@@ -1789,21 +2185,20 @@ def get_cf_list(admin_password: Optional[str] = Query(None)):
 def set_cf_cookie():
     """设置新的Cloudflare cookie"""
     logger.info(f"收到设置Cookie请求")
+    
+    # 从请求参数中获取密码
     admin_password = request.args.get('admin_password', '')
+    
     if admin_password:
         logger.info(f"提供的admin_password长度: {len(admin_password)}")
     else:
         logger.warning("请求中没有提供admin_password参数")
 
-    # 为了调试，暂时注释掉密码验证逻辑
     # 验证密码
-    # verify_admin_password(admin_password)
-
-    # 直接使用默认密码进行比较
     if admin_password != DEFAULT_ADMIN_PASSWORD:
         logger.warning(f"管理员密码验证失败: 接收到的密码与默认密码不匹配")
-        # 为了调试，暂时不抛出异常
         logger.info(f"接收到的密码: {admin_password}, 默认密码: {DEFAULT_ADMIN_PASSWORD}")
+        return jsonify({"error": "Invalid admin password"}), 403
         
     # 从请求中获取cookie数据
     try:
@@ -1847,156 +2242,58 @@ def set_cf_cookie():
         save_cookies(cookies)
         
         logger.info(
-            f"成功保存Cookie: user_agent={cookie_data.get('user_agent')}, proxy_url={cookie_data.get('proxy_url')}")
+            f"成功保存Cookie: user_agent={cookie_data.get('user_agent')[:50]}...")
         
         return jsonify({"status": "success", "message": "Cookie saved successfully"})
     except Exception as e:
         logger.error(f"处理Cookie数据失败: {str(e)}")
         return jsonify({"status": "error", "message": f"处理Cookie数据失败: {str(e)}"}), 400
-    """设置新的Cloudflare cookie"""
-    logger.info(f"收到设置Cookie请求")
-    if admin_password:
-        logger.info(f"提供的admin_password长度: {len(admin_password)}")
-    else:
-        logger.warning("请求中没有提供admin_password参数")
-
-    # 为了调试，暂时注释掉密码验证逻辑
-    # 验证密码
-    # verify_admin_password(admin_password)
-
-    # 直接使用默认密码进行比较
-    if admin_password != DEFAULT_ADMIN_PASSWORD:
-        logger.warning(f"管理员密码验证失败: 接收到的密码与默认密码不匹配")
-        # 为了调试，暂时不抛出异常
-        logger.info(f"接收到的密码: {admin_password}, 默认密码: {DEFAULT_ADMIN_PASSWORD}")
-        
-    # 加载当前配置和Cookie列表
-    config = load_config()
-    cookies = config.get("exist_data_list", [])
-    
-    # 检查是否已存在相同条件的cookie
-    found = False
-    for i, cookie in enumerate(cookies):
-        need_update = False
-    
-        # 检查是否是相同条件的cookie
-        if cookie_data.get("proxy_url") is not None:
-            if (cookie.get("proxy_url") == cookie_data.get("proxy_url") and
-                    cookie.get("user_agent") == cookie_data.get("user_agent")):
-                found = True
-                need_update = True
-        else:
-            if (cookie.get("proxy_url") is None and
-                    cookie.get("user_agent") == cookie_data.get("user_agent")):
-                found = True
-                need_update = True
-    
-        if need_update:
-            # 更新cookie
-            cookies[i] = cookie_data
-            break
-    
-    if not found:
-        # 添加新cookie
-        cookies.append(cookie_data)
-    
-    # 更新配置文件中的exist_data_list
-    config["exist_data_list"] = cookies
-    save_config(config)
-    
-    # 为了兼容性，也保存到cookies文件
-    save_cookies(cookies)
-    
-    logger.info(
-        f"成功保存Cookie: user_agent={cookie_data.get('user_agent')}, proxy_url={cookie_data.get('proxy_url')}")
-    
-    return jsonify({"status": "success", "message": "Cookie saved successfully"})
-
-    # 加载当前配置和Cookie列表
-    config = load_config()
-    cookies = config.get("exist_data_list", [])
-
-    # 将cookie_data转换为字典
-    cookie_dict = cookie_data.to_dict()
-
-    # 检查是否已存在相同条件的cookie
-    found = False
-    for i, cookie in enumerate(cookies):
-        need_update = False
-
-        # 检查是否是相同条件的cookie
-        if cookie_data.proxy_url is not None:
-            if (cookie.get("proxy_url") == cookie_data.proxy_url and
-                    cookie.get("user_agent") == cookie_data.user_agent):
-                found = True
-                need_update = True
-        else:
-            if (cookie.get("proxy_url") is None and
-                    cookie.get("user_agent") == cookie_data.user_agent):
-                found = True
-                need_update = True
-
-        if need_update:
-            # 更新cookie
-            cookies[i] = cookie_dict
-            break
-
-    if not found:
-        # 添加新cookie
-        cookies.append(cookie_dict)
-
-    # 更新配置文件中的exist_data_list
-    config["exist_data_list"] = cookies
-    save_config(config)
-
-    # 为了兼容性，也保存到cookies文件
-    save_cookies(cookies)
-
-    logger.info(
-        f"成功保存Cookie: user_agent={cookie_data.user_agent}, proxy_url={cookie_data.proxy_url}")
-
-    return {"status": "success", "message": "Cookie saved successfully"}
 
 
-@app.post("/api/update-config")
-def update_config(config_data: dict = Body(...), admin_password: Optional[str] = Query(None)):
+@app.route("/api/update-config", methods=['POST'])
+def update_config():
     """更新配置"""
     logger.info(f"收到更新配置请求")
+    
+    # 从请求参数中获取密码
+    admin_password = request.args.get('admin_password')
+    
     if admin_password:
         logger.info(f"提供的admin_password长度: {len(admin_password)}")
     else:
         logger.warning("请求中没有提供admin_password参数")
 
-    # 为了调试，暂时注释掉密码验证逻辑
     # 验证密码
-    # verify_admin_password(admin_password)
-
-    # 直接使用默认密码进行比较
     if admin_password != DEFAULT_ADMIN_PASSWORD:
         logger.warning(f"管理员密码验证失败: 接收到的密码与默认密码不匹配")
-        # 为了调试，暂时不抛出异常
         logger.info(f"接收到的密码: {admin_password}, 默认密码: {DEFAULT_ADMIN_PASSWORD}")
+        return jsonify({"error": "Invalid admin password"}), 403
 
-    current_config = load_config()
+    try:
+        config_data = request.get_json()
+        current_config = load_config()
 
-    # 更新配置
-    if "url" in config_data:
-        current_config["url"] = config_data["url"]
+        # 更新配置
+        if "url" in config_data:
+            current_config["url"] = config_data["url"]
 
-    if "need_update" in config_data:
-        if "proxy_url_pool" in config_data["need_update"]:
-            current_config["need_update"]["proxy_url_pool"] = config_data["need_update"]["proxy_url_pool"]
+        if "need_update" in config_data:
+            if "proxy_url_pool" in config_data["need_update"]:
+                current_config["need_update"]["proxy_url_pool"] = config_data["need_update"]["proxy_url_pool"]
 
-        if "user_agent_list" in config_data["need_update"]:
-            current_config["need_update"]["user_agent_list"] = config_data["need_update"]["user_agent_list"]
+            if "user_agent_list" in config_data["need_update"]:
+                current_config["need_update"]["user_agent_list"] = config_data["need_update"]["user_agent_list"]
 
-        if "user_agent" in config_data["need_update"]:
-            current_config["need_update"]["user_agent"] = config_data["need_update"]["user_agent"]
+            if "user_agent" in config_data["need_update"]:
+                current_config["need_update"]["user_agent"] = config_data["need_update"]["user_agent"]
 
-    save_config(current_config)
-    logger.info(f"成功更新配置")
+        save_config(current_config)
+        logger.info(f"成功更新配置")
 
-    return {"status": "success", "message": "Config updated successfully"}
+        return jsonify({"status": "success", "message": "Config updated successfully"})
+    except Exception as e:
+        logger.error(f"更新配置失败: {str(e)}")
+        return jsonify({"status": "error", "message": f"更新配置失败: {str(e)}"}), 400
 
 
 @app.get("/api/debug")
@@ -2034,3 +2331,4 @@ if __name__ == '__main__':
         port=CONFIG["SERVER"]["PORT"],
         debug=False
     )
+
