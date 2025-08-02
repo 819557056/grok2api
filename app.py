@@ -1446,6 +1446,15 @@ def load_token_manager(file_path="token_manager.pickle"):
         with open(full_path, 'rb') as f:
             token_manager_obj = pickle.load(f)
 
+        # 兼容性检查：确保旧版本对象有必要的属性
+        if not hasattr(token_manager_obj, 'token_usage_records'):
+            logger.info("为旧版本token_manager对象添加token_usage_records属性", "TokenPersistence")
+            token_manager_obj.token_usage_records = {}
+        
+        if not hasattr(token_manager_obj, 'usage_records_file'):
+            logger.info("为旧版本token_manager对象添加usage_records_file属性", "TokenPersistence")
+            token_manager_obj.usage_records_file = str(DATA_DIR / "token_usage_records.json")
+
         logger.info(f"成功从{full_path}加载token_manager对象", "TokenPersistence")
         return token_manager_obj
     except Exception as error:
